@@ -38,6 +38,8 @@
   .warn.on { display: block; }
   .msg { min-height: 1.4em; font-size: 13px; color: var(--muted); }
   .msg.bad { color: var(--end); }
+  .btns { display: flex; gap: 8px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
   button { font: inherit; padding: 6px 12px; color: var(--text); background: var(--bg);
     border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
 </style>
@@ -63,9 +65,9 @@
       <label>End point</label>
       <div class="pos">X <b id="px">0</b> &nbsp; Y <b id="py">0</b> <span>(base = 0, 0)</span></div>
     </div>
-    <div class="msg" id="msg" role="status">Click the canvas to move the end point there.</div>
+    <div class="msg" id="msg" role="status">Click the canvas to move the end point there. Your last two clicks become points A and B.</div>
     <div class="warn" id="warn">⚠ Arm fully stretched: at max reach, no further extension.</div>
-    <div><button id="clear">Clear trail</button></div>
+    <div class="btns"><button id="play" disabled>▶ Play</button><button id="clear">Clear trail</button></div>
   </div>
 </div>
 <script>
@@ -76,6 +78,9 @@ const MAX_TRAIL = 3000;
 let trail = [];   // end-point positions in world units (y up)
 let last = null;
 let scale = 1, anim = 0;
+let pts = [];       // last two reachable clicks (world units): [A, B]
+let playing = false;
+const rMinOf = (l1, l2) => Math.sqrt(l1 ** 2 + l2 ** 2 + 2 * l1 * l2 * Math.cos(150 * Math.PI / 180));
 
 function read() {
   const clampLen = v => Math.min(1000, Math.max(1, parseFloat(v) || 1));
@@ -106,7 +111,7 @@ function draw() {
   ctx.clearRect(0, 0, W, H);
   // reachable area: ring from rMin (joint 2 at its +/-150 limit) out to L1+L2
   const rMax = (p.l1 + p.l2) * s;
-  const rMin = Math.sqrt(p.l1 ** 2 + p.l2 ** 2 + 2 * p.l1 * p.l2 * Math.cos(150 * Math.PI / 180)) * s;
+  const rMin = rMinOf(p.l1, p.l2) * s;
   ctx.beginPath(); ctx.arc(bx, by, rMax, 0, 2 * Math.PI); ctx.arc(bx, by, rMin, 0, 2 * Math.PI);
   ctx.fillStyle = css("--reach"); ctx.fill("evenodd");
   ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
@@ -118,6 +123,17 @@ function draw() {
 
   ctx.strokeStyle = css("--trail"); ctx.lineWidth = 2; ctx.lineJoin = "round";  // trail
   ctx.beginPath(); trail.forEach(([x, y], i) => i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))); ctx.stroke();
+
+  if (pts.length) {                                          // A / B markers
+    ctx.strokeStyle = css("--accent"); ctx.fillStyle = css("--accent"); ctx.lineWidth = 1.5;
+    if (pts.length === 2) {
+      ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.moveTo(X(pts[0].x), Y(pts[0].y)); ctx.lineTo(X(pts[1].x), Y(pts[1].y));
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.font = "bold 13px system-ui, sans-serif";
+    pts.forEach((q, i) => { ctx.beginPath(); ctx.arc(X(q.x), Y(q.y), 5, 0, 7); ctx.stroke();
+      ctx.fillText("AB"[i], X(q.x) + 8, Y(q.y) - 8); });
+  }
 
   ctx.strokeStyle = css("--link"); ctx.lineWidth = 8; ctx.lineCap = "round"; // links
   ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(k.jx), Y(k.jy)); ctx.lineTo(X(k.ex), Y(k.ey)); ctx.stroke();
@@ -133,13 +149,14 @@ function draw() {
   dot(k.ex, k.ey, 7, css("--end"), css("--end"));
 }
 
-["t1", "t2", "l1", "l2"].forEach(id => $(id).addEventListener("input", () => { cancelAnimationFrame(anim); draw(); }));
+["t1", "t2", "l1", "l2"].forEach(id => $(id).addEventListener("input", () => { stop(); draw(); }));
 
 // inverse kinematics: both elbow solutions, keep those inside joint limits
 function solveIK(x, y, l1, l2) {
-  const d2 = x * x + y * y, deg = 180 / Math.PI;
-  const c2 = (d2 - l1 * l1 - l2 * l2) / (2 * l1 * l2);
-  if (c2 > 1 || c2 < Math.cos(150 / deg)) return [];
+  const d2 = x * x + y * y, deg = 180 / Math.PI, lo = Math.cos(150 / deg);
+  let c2 = (d2 - l1 * l1 - l2 * l2) / (2 * l1 * l2);
+  if (c2 > 1 + 1e-9 || c2 < lo - 1e-9) return [];
+  c2 = Math.min(1, Math.max(lo, c2));
   const sols = [];
   for (const t2 of [Math.acos(c2), -Math.acos(c2)]) {
     let t1 = Math.atan2(y, x) - Math.atan2(l2 * Math.sin(t2), l1 + l2 * Math.cos(t2));
@@ -148,36 +165,92 @@ function solveIK(x, y, l1, l2) {
   }
   return sols;
 }
+// the solution with the elbow bent the given way (sign of joint 2)
+function poseFor(pt, sign) {
+  const p = read(), sols = solveIK(pt.x, pt.y, p.l1, p.l2);
+  return sols.find(q => Math.sign(q.t2) === sign) || sols[0];
+}
+const setPose = q => { $("t1").value = q.t1; $("t2").value = q.t2; };
+
+function stop() {
+  cancelAnimationFrame(anim); playing = false; $("play").textContent = "▶ Play";
+}
+// run apply(m) with m easing 0..1 over dur ms (ease in/out), then done()
+function tween(dur, apply, done) {
+  cancelAnimationFrame(anim);
+  const t0 = performance.now();
+  const step = now => {
+    const u = Math.min(1, (now - t0) / dur), m = u * u * (3 - 2 * u);
+    apply(m); draw();
+    if (u < 1) anim = requestAnimationFrame(step); else if (done) done();
+  };
+  anim = requestAnimationFrame(step);
+}
+function glide(to, dur, done) {       // joint-by-joint move from the current pose
+  const p = read();
+  tween(dur, m => setPose({ t1: p.t1 + (to.t1 - p.t1) * m, t2: p.t2 + (to.t2 - p.t2) * m }), done);
+}
+function minDist(a, b) {              // closest approach of segment a-b to the base
+  const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+  const t = len2 ? Math.max(0, Math.min(1, -(a.x * dx + a.y * dy) / len2)) : 0;
+  return Math.hypot(a.x + dx * t, a.y + dy * t);
+}
 
 cv.addEventListener("click", e => {
+  stop();
   const r = cv.getBoundingClientRect(), k = cv.width / r.width;
   const x = ((e.clientX - r.left) * k - cv.width / 2) / scale;
   const y = (cv.height / 2 - (e.clientY - r.top) * k) / scale;
   const p = read(), msg = $("msg");
   const sols = solveIK(x, y, p.l1, p.l2);
   if (!sols.length) {
-    const d = Math.hypot(x, y), rMin = Math.sqrt(p.l1 ** 2 + p.l2 ** 2 + 2 * p.l1 * p.l2 * Math.cos(150 * Math.PI / 180));
+    const d = Math.hypot(x, y);
     msg.className = "msg bad";
     msg.textContent = `Out of reach: (${x.toFixed(1)}, ${y.toFixed(1)}) is ${d.toFixed(1)} from the base. ` +
-      `The arm reaches ${rMin.toFixed(1)} to ${(p.l1 + p.l2).toFixed(1)}.`;
+      `The arm reaches ${rMinOf(p.l1, p.l2).toFixed(1)} to ${(p.l1 + p.l2).toFixed(1)}.`;
     return;
   }
   // of the (up to) two elbow poses, pick the one needing the least joint motion
   const cost = q => Math.abs(q.t1 - p.t1) + Math.abs(q.t2 - p.t2);
-  const to = sols.reduce((a, b) => cost(b) < cost(a) ? b : a);
+  glide(sols.reduce((a, b) => cost(b) < cost(a) ? b : a), 500);
+  pts.push({ x, y }); if (pts.length > 2) pts.shift();
+  $("play").disabled = pts.length < 2;
   msg.className = "msg";
-  msg.textContent = `Moving to (${x.toFixed(1)}, ${y.toFixed(1)}).`;
-  const from = { t1: p.t1, t2: p.t2 }, t0 = performance.now(), dur = 500;
-  cancelAnimationFrame(anim);
-  const step = now => {
-    const u = Math.min(1, (now - t0) / dur), m = u * u * (3 - 2 * u);   // ease in/out
-    $("t1").value = from.t1 + (to.t1 - from.t1) * m;
-    $("t2").value = from.t2 + (to.t2 - from.t2) * m;
-    draw();
-    if (u < 1) anim = requestAnimationFrame(step);
-  };
-  anim = requestAnimationFrame(step);
+  msg.textContent = pts.length < 2
+    ? `Moving to (${x.toFixed(1)}, ${y.toFixed(1)}). Click a second point to set up a path.`
+    : `Moving to (${x.toFixed(1)}, ${y.toFixed(1)}). A = your previous click, B = this one. Press Play.`;
 });
+
+// Play: glide to A, then travel A -> B -> A -> ... until Stop
+function play() {
+  if (playing) { stop(); $("msg").textContent = "Stopped."; return; }
+  if (pts.length < 2) return;
+  const [A, B] = pts, p = read(), msg = $("msg");
+  const near = solveIK(A.x, A.y, p.l1, p.l2);
+  if (!near.length || !solveIK(B.x, B.y, p.l1, p.l2).length) {
+    msg.className = "msg bad"; msg.textContent = "A or B is out of reach for these link lengths. Click new points."; return;
+  }
+  const cost = q => Math.abs(q.t1 - p.t1) + Math.abs(q.t2 - p.t2);
+  const qa = near.reduce((a, b) => cost(b) < cost(a) ? b : a);
+  const sign = Math.sign(qa.t2) || 1;                      // keep the same elbow bend the whole way
+  const straight = minDist(A, B) >= rMinOf(p.l1, p.l2) + 1e-6;   // line must avoid the hole at the base
+  msg.className = "msg";
+  msg.textContent = straight ? "Playing: end point travels A ↔ B in a straight line."
+    : "Playing: the straight line A-B crosses the hole around the base, so joints move together instead.";
+  playing = true; $("play").textContent = "■ Stop";
+
+  const leg = (a, b) => {
+    const done = () => { if (playing) leg(b, a); };
+    if (straight) {
+      tween(1500, m => { const q = poseFor({ x: a.x + (b.x - a.x) * m, y: a.y + (b.y - a.y) * m }, sign); if (q) setPose(q); }, done);
+    } else {
+      const from = poseFor(a, sign), to = poseFor(b, sign);
+      tween(1500, m => setPose({ t1: from.t1 + (to.t1 - from.t1) * m, t2: from.t2 + (to.t2 - from.t2) * m }), done);
+    }
+  };
+  if (cost(qa) < 0.01) leg(A, B); else glide(qa, 700, () => { if (playing) leg(A, B); });
+}
+$("play").addEventListener("click", play);
 $("clear").onclick = () => { trail = []; last = null; draw(); };
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
 draw();
