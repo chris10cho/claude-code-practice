@@ -22,7 +22,7 @@
          font: 15px/1.4 system-ui, sans-serif; }
   .wrap { max-width: 900px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 16px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
-  canvas { display: block; width: 100%; max-width: 520px; height: auto; aspect-ratio: 1; }
+  canvas { display: block; cursor: crosshair; width: 100%; max-width: 520px; height: auto; aspect-ratio: 1; }
   .panel { flex: 1 1 260px; display: flex; flex-direction: column; gap: 14px; }
   h1 { font-size: 18px; margin: 0; }
   label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 4px; }
@@ -36,6 +36,8 @@
   .warn { display: none; padding: 8px 10px; border-radius: 6px; font-size: 13px;
     color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn); }
   .warn.on { display: block; }
+  .msg { min-height: 1.4em; font-size: 13px; color: var(--muted); }
+  .msg.bad { color: var(--end); }
   button { font: inherit; padding: 6px 12px; color: var(--text); background: var(--bg);
     border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
 </style>
@@ -47,11 +49,11 @@
     <h1>2-Link Robot Arm</h1>
     <div>
       <label>Joint 1 angle: <b id="t1v">45°</b></label>
-      <input type="range" id="t1" min="-180" max="180" step="1" value="45">
+      <input type="range" id="t1" min="-180" max="180" step="any" value="45">
     </div>
     <div>
       <label>Joint 2 angle: <b id="t2v">-30°</b></label>
-      <input type="range" id="t2" min="-150" max="150" step="1" value="-30">
+      <input type="range" id="t2" min="-150" max="150" step="any" value="-30">
     </div>
     <div class="row">
       <div><label for="l1">Link 1 length</label><input type="number" id="l1" value="150" min="1" max="1000"></div>
@@ -61,6 +63,7 @@
       <label>End point</label>
       <div class="pos">X <b id="px">0</b> &nbsp; Y <b id="py">0</b> <span>(base = 0, 0)</span></div>
     </div>
+    <div class="msg" id="msg" role="status">Click the canvas to move the end point there.</div>
     <div class="warn" id="warn">⚠ Arm fully stretched: at max reach, no further extension.</div>
     <div><button id="clear">Clear trail</button></div>
   </div>
@@ -72,6 +75,7 @@ const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 const MAX_TRAIL = 3000;
 let trail = [];   // end-point positions in world units (y up)
 let last = null;
+let scale = 1, anim = 0;
 
 function read() {
   const clampLen = v => Math.min(1000, Math.max(1, parseFloat(v) || 1));
@@ -86,7 +90,8 @@ function kinematics({ t1, t2, l1, l2 }) {
 
 function draw() {
   const p = read(), k = kinematics(p);
-  $("t1v").textContent = p.t1 + "°"; $("t2v").textContent = p.t2 + "°";
+  const r1 = v => Math.round(v * 10) / 10;
+  $("t1v").textContent = r1(p.t1) + "°"; $("t2v").textContent = r1(p.t2) + "°";
   $("px").textContent = k.ex.toFixed(1); $("py").textContent = k.ey.toFixed(1);
 
   if (!last || Math.abs(last.x - k.ex) > 0.01 || Math.abs(last.y - k.ey) > 0.01) {
@@ -95,7 +100,7 @@ function draw() {
   }
 
   const W = cv.width, H = cv.height, bx = W / 2, by = H / 2;
-  const s = Math.min(1, (W / 2 - 30) / (p.l1 + p.l2));       // shrink to fit long arms
+  const s = scale = Math.min(1, (W / 2 - 30) / (p.l1 + p.l2));       // shrink to fit long arms
   const X = x => bx + x * s, Y = y => by - y * s;            // world (y up) -> canvas
 
   ctx.clearRect(0, 0, W, H);
@@ -128,7 +133,51 @@ function draw() {
   dot(k.ex, k.ey, 7, css("--end"), css("--end"));
 }
 
-["t1", "t2", "l1", "l2"].forEach(id => $(id).addEventListener("input", draw));
+["t1", "t2", "l1", "l2"].forEach(id => $(id).addEventListener("input", () => { cancelAnimationFrame(anim); draw(); }));
+
+// inverse kinematics: both elbow solutions, keep those inside joint limits
+function solveIK(x, y, l1, l2) {
+  const d2 = x * x + y * y, deg = 180 / Math.PI;
+  const c2 = (d2 - l1 * l1 - l2 * l2) / (2 * l1 * l2);
+  if (c2 > 1 || c2 < Math.cos(150 / deg)) return [];
+  const sols = [];
+  for (const t2 of [Math.acos(c2), -Math.acos(c2)]) {
+    let t1 = Math.atan2(y, x) - Math.atan2(l2 * Math.sin(t2), l1 + l2 * Math.cos(t2));
+    t1 = Math.atan2(Math.sin(t1), Math.cos(t1));   // wrap to -180..180
+    sols.push({ t1: t1 * deg, t2: t2 * deg });
+  }
+  return sols;
+}
+
+cv.addEventListener("click", e => {
+  const r = cv.getBoundingClientRect(), k = cv.width / r.width;
+  const x = ((e.clientX - r.left) * k - cv.width / 2) / scale;
+  const y = (cv.height / 2 - (e.clientY - r.top) * k) / scale;
+  const p = read(), msg = $("msg");
+  const sols = solveIK(x, y, p.l1, p.l2);
+  if (!sols.length) {
+    const d = Math.hypot(x, y), rMin = Math.sqrt(p.l1 ** 2 + p.l2 ** 2 + 2 * p.l1 * p.l2 * Math.cos(150 * Math.PI / 180));
+    msg.className = "msg bad";
+    msg.textContent = `Out of reach: (${x.toFixed(1)}, ${y.toFixed(1)}) is ${d.toFixed(1)} from the base. ` +
+      `The arm reaches ${rMin.toFixed(1)} to ${(p.l1 + p.l2).toFixed(1)}.`;
+    return;
+  }
+  // of the (up to) two elbow poses, pick the one needing the least joint motion
+  const cost = q => Math.abs(q.t1 - p.t1) + Math.abs(q.t2 - p.t2);
+  const to = sols.reduce((a, b) => cost(b) < cost(a) ? b : a);
+  msg.className = "msg";
+  msg.textContent = `Moving to (${x.toFixed(1)}, ${y.toFixed(1)}).`;
+  const from = { t1: p.t1, t2: p.t2 }, t0 = performance.now(), dur = 500;
+  cancelAnimationFrame(anim);
+  const step = now => {
+    const u = Math.min(1, (now - t0) / dur), m = u * u * (3 - 2 * u);   // ease in/out
+    $("t1").value = from.t1 + (to.t1 - from.t1) * m;
+    $("t2").value = from.t2 + (to.t2 - from.t2) * m;
+    draw();
+    if (u < 1) anim = requestAnimationFrame(step);
+  };
+  anim = requestAnimationFrame(step);
+});
 $("clear").onclick = () => { trail = []; last = null; draw(); };
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
 draw();
