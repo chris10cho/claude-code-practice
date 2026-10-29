@@ -8,13 +8,13 @@
   :root {
     --bg: #f5f6f8; --card: #fff; --text: #1c2330; --muted: #6b7585;
     --line: #dfe3ea; --accent: #1f6feb; --link: #3b4658; --trail: rgba(31,111,235,.35);
-    --end: #e5484d;
+    --end: #e5484d; --reach: rgba(31,111,235,.10); --warn: #b45309; --warn-bg: #fef3c7;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #8f99aa;
       --line: #2d3442; --accent: #5b9bff; --link: #aab4c6; --trail: rgba(91,155,255,.35);
-      --end: #ff6b6f;
+      --end: #ff6b6f; --reach: rgba(91,155,255,.12); --warn: #fbbf24; --warn-bg: #3a2c0a;
     }
   }
   * { box-sizing: border-box; }
@@ -33,6 +33,9 @@
   .row { display: flex; gap: 12px; } .row > div { flex: 1; }
   .pos { font-size: 22px; font-variant-numeric: tabular-nums; }
   .pos span { color: var(--muted); font-size: 13px; }
+  .warn { display: none; padding: 8px 10px; border-radius: 6px; font-size: 13px;
+    color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn); }
+  .warn.on { display: block; }
   button { font: inherit; padding: 6px 12px; color: var(--text); background: var(--bg);
     border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
 </style>
@@ -58,6 +61,7 @@
       <label>End point</label>
       <div class="pos">X <b id="px">0</b> &nbsp; Y <b id="py">0</b> <span>(base = 0, 0)</span></div>
     </div>
+    <div class="warn" id="warn">⚠ Arm fully stretched: at max reach, no further extension.</div>
     <div><button id="clear">Clear trail</button></div>
   </div>
 </div>
@@ -95,6 +99,15 @@ function draw() {
   const X = x => bx + x * s, Y = y => by - y * s;            // world (y up) -> canvas
 
   ctx.clearRect(0, 0, W, H);
+  // reachable area: ring from rMin (joint 2 at its +/-150 limit) out to L1+L2
+  const rMax = (p.l1 + p.l2) * s;
+  const rMin = Math.sqrt(p.l1 ** 2 + p.l2 ** 2 + 2 * p.l1 * p.l2 * Math.cos(150 * Math.PI / 180)) * s;
+  ctx.beginPath(); ctx.arc(bx, by, rMax, 0, 2 * Math.PI); ctx.arc(bx, by, rMin, 0, 2 * Math.PI);
+  ctx.fillStyle = css("--reach"); ctx.fill("evenodd");
+  ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.arc(bx, by, rMax, 0, 2 * Math.PI); ctx.moveTo(bx + rMin, by); ctx.arc(bx, by, rMin, 0, 2 * Math.PI);
+  ctx.stroke(); ctx.setLineDash([]);
+  $("warn").classList.toggle("on", Math.abs(p.t2) < 0.5);
   ctx.strokeStyle = css("--line"); ctx.lineWidth = 1;        // axes
   ctx.beginPath(); ctx.moveTo(0, by); ctx.lineTo(W, by); ctx.moveTo(bx, 0); ctx.lineTo(bx, H); ctx.stroke();
 

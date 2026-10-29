@@ -5,6 +5,8 @@ A 2D two-link arm simulator. One HTML file, no libraries. Open `index.html` in a
 - **Sliders:** joint 1 (-180° to 180°), joint 2 (-150° to 150°)
 - **Inputs:** link lengths L1 and L2 (defaults 150 and 100)
 - **Readout:** live end-point X and Y, with the base at (0, 0), X right, Y up
+- **Reach shading:** the blue ring is every point the arm can reach (dashed edges). Outer radius = L1 + L2 (arm straight). Inner radius = √(L1² + L2² + 2·L1·L2·cos 150°), where joint 2 is bent to its limit. Joint 1 spins a full 360°, so the reach is a complete ring with a hole in the middle.
+- **Warning:** shows when joint 2 is 0°, i.e. the arm is fully stretched and on the outer edge of the ring.
 - **Trail:** faint line of where the end point has been (last 3000 points). "Clear trail" resets it.
 
 ## How the position is calculated (forward kinematics)
