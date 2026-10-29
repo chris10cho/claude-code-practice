@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2-Link Robot Arm</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #1c2330; --muted: #6b7585;
+    --line: #dfe3ea; --accent: #1f6feb; --link: #3b4658; --trail: rgba(31,111,235,.35);
+    --end: #e5484d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #8f99aa;
+      --line: #2d3442; --accent: #5b9bff; --link: #aab4c6; --trail: rgba(91,155,255,.35);
+      --end: #ff6b6f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.4 system-ui, sans-serif; }
+  .wrap { max-width: 900px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  canvas { display: block; width: 100%; max-width: 520px; height: auto; aspect-ratio: 1; }
+  .panel { flex: 1 1 260px; display: flex; flex-direction: column; gap: 14px; }
+  h1 { font-size: 18px; margin: 0; }
+  label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 4px; }
+  label b { color: var(--text); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=number] { width: 100%; padding: 6px 8px; font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .row { display: flex; gap: 12px; } .row > div { flex: 1; }
+  .pos { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .pos span { color: var(--muted); font-size: 13px; }
+  button { font: inherit; padding: 6px 12px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card"><canvas id="c" width="520" height="520"></canvas></div>
+  <div class="card panel">
+    <h1>2-Link Robot Arm</h1>
+    <div>
+      <label>Joint 1 angle: <b id="t1v">45°</b></label>
+      <input type="range" id="t1" min="-180" max="180" step="1" value="45">
+    </div>
+    <div>
+      <label>Joint 2 angle: <b id="t2v">-30°</b></label>
+      <input type="range" id="t2" min="-150" max="150" step="1" value="-30">
+    </div>
+    <div class="row">
+      <div><label for="l1">Link 1 length</label><input type="number" id="l1" value="150" min="1" max="1000"></div>
+      <div><label for="l2">Link 2 length</label><input type="number" id="l2" value="100" min="1" max="1000"></div>
+    </div>
+    <div>
+      <label>End point</label>
+      <div class="pos">X <b id="px">0</b> &nbsp; Y <b id="py">0</b> <span>(base = 0, 0)</span></div>
+    </div>
+    <div><button id="clear">Clear trail</button></div>
+  </div>
+</div>
+<script>
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const MAX_TRAIL = 3000;
+let trail = [];   // end-point positions in world units (y up)
+let last = null;
+
+function read() {
+  const clampLen = v => Math.min(1000, Math.max(1, parseFloat(v) || 1));
+  return { t1: +$("t1").value, t2: +$("t2").value, l1: clampLen($("l1").value), l2: clampLen($("l2").value) };
+}
+
+function kinematics({ t1, t2, l1, l2 }) {
+  const a1 = t1 * Math.PI / 180, a2 = (t1 + t2) * Math.PI / 180;
+  const jx = l1 * Math.cos(a1), jy = l1 * Math.sin(a1);
+  return { jx, jy, ex: jx + l2 * Math.cos(a2), ey: jy + l2 * Math.sin(a2) };
+}
+
+function draw() {
+  const p = read(), k = kinematics(p);
+  $("t1v").textContent = p.t1 + "°"; $("t2v").textContent = p.t2 + "°";
+  $("px").textContent = k.ex.toFixed(1); $("py").textContent = k.ey.toFixed(1);
+
+  if (!last || Math.abs(last.x - k.ex) > 0.01 || Math.abs(last.y - k.ey) > 0.01) {
+    trail.push([k.ex, k.ey]); if (trail.length > MAX_TRAIL) trail.shift();
+    last = { x: k.ex, y: k.ey };
+  }
+
+  const W = cv.width, H = cv.height, bx = W / 2, by = H / 2;
+  const s = Math.min(1, (W / 2 - 30) / (p.l1 + p.l2));       // shrink to fit long arms
+  const X = x => bx + x * s, Y = y => by - y * s;            // world (y up) -> canvas
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = css("--line"); ctx.lineWidth = 1;        // axes
+  ctx.beginPath(); ctx.moveTo(0, by); ctx.lineTo(W, by); ctx.moveTo(bx, 0); ctx.lineTo(bx, H); ctx.stroke();
+
+  ctx.strokeStyle = css("--trail"); ctx.lineWidth = 2; ctx.lineJoin = "round";  // trail
+  ctx.beginPath(); trail.forEach(([x, y], i) => i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))); ctx.stroke();
+
+  ctx.strokeStyle = css("--link"); ctx.lineWidth = 8; ctx.lineCap = "round"; // links
+  ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(k.jx), Y(k.jy)); ctx.lineTo(X(k.ex), Y(k.ey)); ctx.stroke();
+
+  ctx.fillStyle = css("--link");                              // base block
+  ctx.fillRect(bx - 22, by + 6, 44, 14);
+  const dot = (x, y, r, fill, stroke) => { ctx.beginPath(); ctx.arc(X(x), Y(y), r, 0, 7);
+    ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = stroke; ctx.stroke(); };
+  dot(0, 0, 9, css("--card"), css("--link"));                 // joints
+  dot(k.jx, k.jy, 9, css("--card"), css("--link"));
+  ctx.beginPath(); ctx.arc(X(k.ex), Y(k.ey), 16, 0, 7);       // end point halo + dot
+  ctx.fillStyle = css("--end") + "33"; ctx.fill();
+  dot(k.ex, k.ey, 7, css("--end"), css("--end"));
+}
+
+["t1", "t2", "l1", "l2"].forEach(id => $(id).addEventListener("input", draw));
+$("clear").onclick = () => { trail = []; last = null; draw(); };
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+draw();
+</script>
+</body>
+</html>
