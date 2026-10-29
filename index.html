@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unit Converter</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #1c2330; --muted: #6b7585;
+    --line: #dfe3ea; --accent: #1f6feb; --accent-soft: #e8f0fe;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #8f99aa;
+      --line: #2d3442; --accent: #5b9bff; --accent-soft: #1f2d47;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px;
+  }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .tabs button {
+    flex: 1 1 auto; padding: 8px 12px; border: 1px solid var(--line);
+    background: transparent; color: var(--text); border-radius: 8px;
+    font: inherit; cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] {
+    background: var(--accent-soft); border-color: var(--accent);
+    color: var(--accent); font-weight: 600;
+  }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 4px; }
+  input, select {
+    width: 100%; padding: 10px; font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  }
+  input:focus, select:focus, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  #swap {
+    display: block; margin: 12px auto; padding: 6px 14px; font: inherit;
+    border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+    background: transparent; color: var(--muted);
+  }
+  #result { font-size: 1.6rem; font-weight: 600; word-break: break-all; margin: 4px 0 16px; }
+  #result small { font-size: .9rem; color: var(--muted); font-weight: 400; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  td { padding: 6px 0; border-top: 1px solid var(--line); }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; word-break: break-all; }
+  td:first-child { color: var(--muted); padding-right: 12px; white-space: nowrap; }
+  tr.sel td { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Unit Converter</h1>
+  <div class="card">
+    <div class="tabs" role="tablist" id="tabs"></div>
+
+    <div class="row">
+      <div><label for="value">Value</label><input id="value" type="number" step="any" value="1" inputmode="decimal"></div>
+      <div><label for="from">From</label><select id="from"></select></div>
+    </div>
+    <button id="swap" type="button" title="Swap units">⇅ Swap</button>
+    <div class="row">
+      <div><label>Result</label></div>
+      <div><label for="to">To</label><select id="to"></select></div>
+    </div>
+    <div id="result" aria-live="polite"></div>
+
+    <label>All units</label>
+    <table><tbody id="all"></tbody></table>
+  </div>
+</main>
+
+<script>
+// Each unit's factor converts it to the category's base unit.
+const CATEGORIES = {
+  Torque: { base: "N·m", units: {
+    "N·m": 1, "kN·m": 1000, "N·cm": 0.01, "N·mm": 0.001,
+    "kgf·m": 9.80665, "kgf·cm": 0.0980665,
+    "lbf·ft": 1.3558179483314004, "lbf·in": 0.1129848290276167, "ozf·in": 0.007061551814226 } },
+  Speed: { base: "m/s", units: {
+    "m/s": 1, "km/h": 1 / 3.6, "mph": 0.44704, "ft/s": 0.3048, "knot": 1852 / 3600 } },
+  "Rotational speed": { base: "rad/s", units: {
+    "rpm": 2 * Math.PI / 60, "rad/s": 1, "deg/s": Math.PI / 180, "rev/s (Hz)": 2 * Math.PI } },
+  Force: { base: "N", units: {
+    "N": 1, "kN": 1000, "lbf": 4.4482216152605, "kgf": 9.80665,
+    "ozf": 0.2780138509537812, "dyn": 1e-5 } },
+  Pressure: { base: "Pa", units: {
+    "Pa": 1, "kPa": 1000, "MPa": 1e6, "bar": 1e5, "mbar": 100,
+    "psi": 6894.757293168361, "ksi": 6894757.293168361, "atm": 101325,
+    "mmHg": 133.322387415, "torr": 101325 / 760, "inH₂O": 249.08891 } },
+};
+
+const $ = id => document.getElementById(id);
+let current = "Torque";
+
+function fmt(n) {
+  if (!isFinite(n)) return "—";
+  if (n === 0) return "0";
+  const abs = Math.abs(n);
+  if (abs >= 1e9 || abs < 1e-4) return n.toExponential(5).replace(/\.?0+e/, "e");
+  return String(parseFloat(n.toPrecision(8)));
+}
+
+function convert(v, from, to) {
+  const u = CATEGORIES[current].units;
+  return v * u[from] / u[to];
+}
+
+function render() {
+  const v = parseFloat($("value").value);
+  const from = $("from").value, to = $("to").value;
+  const ok = !isNaN(v);
+  $("result").innerHTML = ok
+    ? `${fmt(convert(v, from, to))} <small>${to}</small>` : "—";
+  $("all").innerHTML = Object.keys(CATEGORIES[current].units).map(u =>
+    `<tr class="${u === to ? "sel" : ""}"><td>${u}</td><td>${ok ? fmt(convert(v, from, u)) : "—"}</td></tr>`
+  ).join("");
+}
+
+function fillUnits(sel, names, pick) {
+  sel.innerHTML = names.map(n => `<option>${n}</option>`).join("");
+  sel.value = pick;
+}
+
+function setCategory(name) {
+  current = name;
+  const names = Object.keys(CATEGORIES[name].units);
+  fillUnits($("from"), names, names[0]);
+  fillUnits($("to"), names, names[1]);
+  document.querySelectorAll("#tabs button").forEach(b =>
+    b.setAttribute("aria-selected", b.textContent === name));
+  render();
+}
+
+$("tabs").innerHTML = Object.keys(CATEGORIES).map(n =>
+  `<button role="tab" type="button">${n}</button>`).join("");
+$("tabs").addEventListener("click", e => {
+  if (e.target.matches("button")) setCategory(e.target.textContent);
+});
+["value", "from", "to"].forEach(id => $(id).addEventListener("input", render));
+$("swap").addEventListener("click", () => {
+  [$("from").value, $("to").value] = [$("to").value, $("from").value];
+  render();
+});
+
+setCategory(current);
+</script>
+</body>
+</html>
